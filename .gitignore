@@ -4,6 +4,7 @@ node_modules/
 frontend/dist/
 
 # uploaded and generated media
+ignore/
 inputs/
 outputs/
 examples/
