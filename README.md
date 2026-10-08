@@ -31,7 +31,7 @@ Two terminals:
 
 ```powershell
 cd backend; ..\.venv\Scripts\python -m uvicorn moutheyes.api:app --reload --port 8000
-cd frontend; npm run dev        # http://localhost:5173, proxies /api and /media to :8000
+cd frontend; npm run dev        # http://localhost:5180, proxies /api and /media to :8000
 ```
 
 ## Run as one server

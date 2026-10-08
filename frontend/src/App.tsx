@@ -13,6 +13,14 @@ const STAGE_LABEL = {
   encoding: 'Encoding GIF',
 }
 
+const POLL_MS = 400
+
+function formatEta(seconds: number) {
+  if (seconds < 1) return 'almost done'
+  if (seconds < 60) return `~${Math.ceil(seconds)}s left`
+  return `~${Math.floor(seconds / 60)}m ${Math.round(seconds % 60)}s left`
+}
+
 const message = (e: unknown) => (e instanceof Error ? e.message : String(e))
 
 export default function App() {
@@ -54,7 +62,7 @@ export default function App() {
         setJob(null)
         setError(message(e))
       }
-    }, 400)
+    }, POLL_MS)
     return () => clearTimeout(timer)
   }, [job, busy, refreshGallery])
 
@@ -177,6 +185,7 @@ export default function App() {
               <p className="muted">
                 {job.filename}
                 {job.reaction && ` · ${job.reaction}`} · {Math.round(job.progress * 100)}%
+                {job.eta !== null && ` · ${formatEta(job.eta)}`}
               </p>
             </div>
           ) : selected ? (

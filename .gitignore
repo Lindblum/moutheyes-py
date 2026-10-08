@@ -8,3 +8,6 @@ ignore/
 inputs/
 outputs/
 examples/
+
+# learned per-stage timings for the progress bar
+timings.json

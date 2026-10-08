@@ -14,6 +14,8 @@ export interface Job {
   status: 'queued' | 'running' | 'done' | 'error'
   stage: 'animating' | 'tracking' | 'compositing' | 'encoding' | null
   progress: number
+  /** estimated seconds left, while running */
+  eta: number | null
   reaction: string | null
   error: string | null
   result: Item | null

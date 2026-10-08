@@ -167,6 +167,7 @@ def animate_still(path, out_path, rng, fps=20, kind=None, progress=_no_progress)
     is filled with a shaded mouth-cavity colour sampled from the photo. The clip loops cleanly.
     Returns the reaction parameters that were used.
     """
+    progress("animating", 0.0)
     rgb = np.array(Image.open(path).convert("RGB"))
     with make_landmarker(video=False) as lm:
         L = detect(lm, rgb)
@@ -269,13 +270,58 @@ def animate_still(path, out_path, rng, fps=20, kind=None, progress=_no_progress)
         cav_px = cav[None, None, :] * shade[..., None]
         frame = frame * (1 - cov[..., None]) + cav_px * cov[..., None]
         frames.append(np.clip(frame, 0, 255).astype(np.uint8))
-        progress("animating", (i + 1) / n)
+        progress("animating", 0.7 * (i + 1) / n)  # the full-size GIF save below is the other ~30%
     save_gif(frames, [1000 / fps] * n, out_path, max_side=max(h, w))
     return P
 
 
+# ---------------------------------------------------------------- skin colour
+# upper cheeks, forehead and nose bridge: skin on most faces, clear of lips, eyes, brows and beards
+SKIN_POINTS = [50, 280, 101, 330, 117, 346, 151, 108, 337, 6, 197]
+
+
+def skin_model(frames, lms, samples=8):
+    """Skin colour of the face, pooled over a few frames: Lab chroma mean/covariance + lightness range.
+
+    Returns None when too little skin could be sampled (then nothing is gated on it).
+    """
+    px = []
+    for i in np.linspace(0, len(frames) - 1, min(samples, len(frames))).astype(int):
+        rgb, L = frames[i], lms[i]
+        h, w = rgb.shape[:2]
+        r = max(1, int(0.06 * np.linalg.norm(L[EYES[0][0]] - L[EYES[1][0]])))
+        disc = np.zeros((h, w), np.uint8)
+        for x, y in L[SKIN_POINTS].astype(int):
+            cv2.circle(disc, (int(x), int(y)), r, 1, -1)
+        px.append(cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB)[disc > 0])
+    lab = np.concatenate(px).astype(np.float32)
+    if len(lab) < 50:
+        return None
+    # drop outliers (hair over the forehead, glasses, highlights) by distance from the median
+    med = np.median(lab, 0)
+    mad = 1.4826 * np.median(np.abs(lab - med), 0) + 2
+    lab = lab[(np.abs(lab - med) < 3 * mad).all(1)]
+    if len(lab) < 50:
+        return None
+    ab = lab[:, 1:]
+    cov = np.cov(ab.T) + 9 * np.eye(2)  # floor of ~3 units: flat or palette-quantized GIFs are near-degenerate
+    lo, hi = np.percentile(lab[:, 0], [5, 95])
+    return dict(ab=ab.mean(0), icov=np.linalg.inv(cov), lo=lo, hi=hi, margin=max(12.0, 0.3 * (hi - lo)))
+
+
+def skin_prob(skin, rgb):
+    """0..1 per pixel of an RGB uint8 image: how well it matches the skin model."""
+    lab = cv2.cvtColor(rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+    d = lab[..., 1:] - skin["ab"]
+    dist = np.sqrt(np.einsum("...i,ij,...j->...", d, skin["icov"], d))
+    chroma = np.clip((4.5 - dist) / 1.5, 0, 1)  # full weight within 3 sigma, none past 4.5
+    off = np.maximum(skin["lo"] - lab[..., 0], lab[..., 0] - skin["hi"])
+    light = np.clip(1 - off / skin["margin"], 0, 1)
+    return chroma * light
+
+
 # ---------------------------------------------------------------- moutheyes compositing
-def moutheye_frame(rgb, L, mouth_scale=1.35):
+def moutheye_frame(rgb, L, mouth_scale=1.35, skin=None):
     h, w = rgb.shape[:2]
     out = rgb.astype(np.float32)
     ml, mr = L[MOUTH_L], L[MOUTH_R]
@@ -284,12 +330,24 @@ def moutheye_frame(rgb, L, mouth_scale=1.35):
     lips = L[LIPS_OUTER]
     mc = lips.mean(0)
 
-    # soft mouth mask in source space: lip hull dilated into surrounding skin, then feathered
+    # soft mouth mask in source space: lip hull dilated into surrounding skin, then feathered.
+    # Past a thin border that always comes along (lip edges aren't skin-coloured), the dilated
+    # margin only keeps skin, so shadow, stubble or background there doesn't ring the new mouths.
     mask = np.zeros((h, w), np.float32)
     hull = cv2.convexHull(lips.astype(np.int32))
     cv2.fillConvexPoly(mask, hull, 1.0)
+
+    def grow(m, pad):
+        return cv2.dilate(m, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * pad + 1, 2 * pad + 1)))
     pad = max(2, int(0.12 * mw))
-    mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * pad + 1, 2 * pad + 1)))
+    core, mask = grow(mask, max(1, int(0.04 * mw))), grow(mask, pad)
+    if skin is not None:
+        x, y, bw, bh = cv2.boundingRect(hull)
+        x0, y0, x1, y1 = max(0, x - pad), max(0, y - pad), min(w, x + bw + pad), min(h, y + bh + pad)
+        p = np.zeros((h, w), np.float32)
+        p[y0:y1, x0:x1] = skin_prob(skin, rgb[y0:y1, x0:x1])
+        p = cv2.GaussianBlur(p, (0, 0), 0.03 * mw + 0.5)  # no speckle from dither or noise
+        mask = np.maximum(core, mask * p)
     m = int(0.2 * mw) + 1
     mask[:m], mask[-m:], mask[:, :m], mask[:, -m:] = 0, 0, 0, 0
     # clear margin + zero border so a mouth near the frame edge still gets a feathered edge, not a hard seam
@@ -308,8 +366,13 @@ def moutheye_frame(rgb, L, mouth_scale=1.35):
         patch = cv2.warpAffine(rgb, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REFLECT).astype(np.float32)
         a = cv2.warpAffine(mask, M, (w, h), flags=cv2.INTER_LINEAR)[..., None]
 
-        # match the patch's skin tone to the skin around the eye (ring of the mask)
+        # match the patch's skin tone to the skin around the eye (ring of the mask), skin pixels only
         ring = ((a[..., 0] > 0.05) & (a[..., 0] < 0.5))
+        if skin is not None and ring.sum() > 20:
+            both = np.minimum(skin_prob(skin, rgb[ring][:, None]),
+                              skin_prob(skin, np.clip(patch[ring], 0, 255).astype(np.uint8)[:, None]))[:, 0]
+            if (both > 0.5).sum() > 20:
+                ring[ring] = both > 0.5
         if ring.sum() > 20:
             gain = (out[ring].mean(0) + 1) / (patch[ring].mean(0) + 1)
             patch *= np.clip(gain, 0.88, 1.14)
@@ -319,15 +382,17 @@ def moutheye_frame(rgb, L, mouth_scale=1.35):
 
 def make_moutheyes(path, out_path, mouth_scale=1.35, progress=_no_progress, eyes_path=None):
     """Write the moutheyes GIF; with eyes_path, also write the untouched frames as a matching GIF."""
+    progress("tracking", 0.0)
     frames, durs = load_animation(path)
     if not frames:
         raise ValueError(f"could not read any frames from {path.name}")
     lms = track(frames, durs, progress)
     if lms is None:
         raise NoFaceError(path.name)
+    skin = skin_model(frames, lms)
     out = []
     for f, l in zip(frames, lms):
-        out.append(moutheye_frame(f, l, mouth_scale))
+        out.append(moutheye_frame(f, l, mouth_scale, skin))
         progress("compositing", len(out) / len(frames))
     progress("encoding", 0.0)
     save_gif(out, durs, out_path)

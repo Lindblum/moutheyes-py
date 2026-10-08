@@ -3,6 +3,8 @@ import type { Item } from '../api'
 import GifPlayer from './GifPlayer'
 import { formatSize } from './Viewer'
 
+const PAGE_SIZE = 12
+
 interface Props {
   items: Item[]
   selected: Item | null
@@ -46,25 +48,47 @@ export default function Gallery({ items, selected, onSelect, onDelete }: Props) 
     })
   }
 
+  // render cards a page at a time; the next page loads when the sentinel below the grid
+  // nears the viewport
+  const [shown, setShown] = useState(PAGE_SIZE)
+  const [sentinel, setSentinel] = useState<HTMLDivElement | null>(null)
+  const hasMore = shown < items.length
+
+  // re-observe after every page so a sentinel that is still on screen loads the next one too
+  useEffect(() => {
+    if (!sentinel || !hasMore) return
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) setShown((n) => n + PAGE_SIZE)
+      },
+      { rootMargin: '400px' },
+    )
+    observer.observe(sentinel)
+    return () => observer.disconnect()
+  }, [sentinel, hasMore, shown])
+
   if (items.length === 0) {
     return <p className="muted gallery-empty">Nothing here yet. Finished GIFs will collect below.</p>
   }
   return (
-    <ul className="gallery">
-      {items.map((item) => (
-        <GalleryCard
-          key={item.name}
-          item={item}
-          active={item.name === selected?.name}
-          current={item.name === current}
-          onCurrent={() => setCurrent(item.name)}
-          showEyes={eyed.has(item.name)}
-          setShowEyes={(show) => setShowEyes(item.name, show)}
-          onSelect={onSelect}
-          onDelete={onDelete}
-        />
-      ))}
-    </ul>
+    <>
+      <ul className="gallery">
+        {items.slice(0, shown).map((item) => (
+          <GalleryCard
+            key={item.name}
+            item={item}
+            active={item.name === selected?.name}
+            current={item.name === current}
+            onCurrent={() => setCurrent(item.name)}
+            showEyes={eyed.has(item.name)}
+            setShowEyes={(show) => setShowEyes(item.name, show)}
+            onSelect={onSelect}
+            onDelete={onDelete}
+          />
+        ))}
+      </ul>
+      {hasMore && <div ref={setSentinel} aria-hidden="true" />}
+    </>
   )
 }
 
@@ -144,15 +168,22 @@ function GalleryCard({ item, active, current, onCurrent, showEyes, setShowEyes, 
           aria-label={`Delete ${item.name}`}
           title="Delete"
         >
-          <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
-            <path
-              d="M5 7h14M10 7V5h4v2m-7 0 1 12h8l1-12"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.8"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            />
+          <svg
+            viewBox="0 0 24 24"
+            width="16"
+            height="16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <polyline points="3 6 5 6 21 6" />
+            <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+            <path d="M9.5 10v7.5" />
+            <path d="M14.5 10v7.5" />
+            <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
           </svg>
         </button>
       </div>
