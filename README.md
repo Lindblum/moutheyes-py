@@ -17,6 +17,11 @@ inputs/, outputs/    uploads and finished GIFs (git-ignored)
 
 Requires Python 3.11+, Node 20+, and `ffmpeg` on PATH.
 
+## Sample
+
+![Sample input](docs/sample-in.gif)
+![Sample output](docs/sample-out.gif)
+
 ## Setup
 
 ```powershell
